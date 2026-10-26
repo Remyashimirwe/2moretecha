@@ -1,0 +1,220 @@
+// Prisma 7 schema for 2-MoreTechs.
+//
+// Milestone 2 (checkout): an Order is one payment; it contains one or more
+// OrderItems (domains). Payment status lives on the Order, registration
+// status on each Item — an order can be PAID while an item is still
+// REGISTERING or FAILED (retryable).
+//
+// Generate the client with:  npx prisma generate
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // url is configured centrally in prisma.config.ts (Prisma 7 convention).
+}
+
+model Customer {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  phone        String?
+  country      String?
+  /// ResellerClub customer id (customers/signup.json) — created on first purchase.
+  rcCustomerId Int?
+  /// ResellerClub contact id (contacts/add.json) used for registration WHOIS.
+  rcContactId  Int?
+
+  // Registrant contact details (WHOIS / ResellerClub contacts/add.json)
+  company      String?
+  addressLine1 String?
+  city         String?
+  state        String?
+  zipcode      String?
+  phoneCc      String?
+
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  orders       Order[]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  name          String?
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  accounts      Account[]
+  sessions      Session[]
+  supportTickets SupportTicket[]
+}
+
+model Account {
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([sessionToken])
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@id([identifier, token])
+}
+
+model EmailCodeChallenge {
+  id             String    @id @default(cuid())
+  email          String
+  purpose        EmailCodePurpose
+  codeHash       String?
+  expiresAt      DateTime
+  attempts       Int       @default(0)
+  sentAt         DateTime?
+  windowStartedAt DateTime  @default(now())
+  sentCount      Int       @default(0)
+
+  @@unique([email, purpose])
+  @@index([expiresAt])
+}
+
+model AuthRateLimit {
+  key            String   @id
+  windowStartedAt DateTime @default(now())
+  attempts       Int      @default(0)
+  @@index([windowStartedAt])
+}
+
+enum EmailCodePurpose {
+  SIGN_UP
+  SIGN_IN
+}
+
+model Order {
+  id         String   @id @default(cuid())
+  /// Guest checkout email; links to the customer record.
+  email      String
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  /// Total charged for this checkout, in minor units (e.g. cents).
+  amount     Int
+  currency   String   @default("USD")
+  status     OrderStatus @default(PENDING)
+  /// Payment provider: "paypal" or "mock".
+  paymentProvider String @default("paypal")
+  paymentRef String?  // capture / transaction id (verified server-side)
+  /// PayPal order id created server-side with custom_id = this order's id.
+  paymentOrderId String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  items      OrderItem[]
+
+  @@index([email])
+  @@index([status, createdAt])
+}
+
+model OrderItem {
+  id       String @id @default(cuid())
+  orderId  String
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  domain   String
+  tld      String
+  years    Int    @default(1)
+  /// Charged amount for this line, in minor units.
+  amount   Int
+  /// Registration lifecycle: pending → registering → active | failed.
+  status   String @default("pending")
+  /// ResellerClub domain order id (domains/register.json).
+  rcOrderId  Int?
+  registeredAt DateTime?
+  expiresAt   DateTime?
+  lastError   String?
+  /// Used to detect registrations stuck mid-flight after a crash/restart.
+  updatedAt   DateTime @updatedAt
+
+  @@unique([orderId, domain])
+  @@index([orderId])
+}
+
+model SupportTicket {
+  id        String                @id @default(cuid())
+  userId    String
+  subject   String                @db.VarChar(160)
+  service   TicketService
+  status    TicketStatus          @default(OPEN)
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  SupportTicketMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model SupportTicketMessage {
+  id        String               @id @default(cuid())
+  ticketId  String
+  sender    TicketMessageSender  @default(CUSTOMER)
+  body      String               @db.Text
+  createdAt DateTime             @default(now())
+  ticket    SupportTicket        @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_FOR_CUSTOMER
+  CLOSED
+}
+
+enum TicketService {
+  DOMAINS
+  HOSTING
+  BUSINESS_EMAIL
+  SSL_SECURITY
+  BILLING
+  ACCOUNT
+  OTHER
+}
+
+enum TicketMessageSender {
+  CUSTOMER
+  SUPPORT
+}
